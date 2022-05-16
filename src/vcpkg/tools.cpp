@@ -661,6 +661,33 @@ coscli version v0.11.0-beta
         }
     };
 
+    struct JFrogCliProvider : ToolProvider
+    {
+        virtual StringLiteral tool_data_name() const override { return Tools::JFROGCLI; }
+        virtual StringLiteral exe_stem() const override { return Tools::JFROGCLI; }
+        virtual std::array<int, 3> default_min_version() const override { return {2, 16, 4}; }
+
+        virtual ExpectedS<std::string> get_version(const VcpkgPaths&, const Path& exe_path) const override
+        {
+            auto cmd = Command(exe_path).string_arg("-v");
+            auto rc = cmd_execute_and_capture_output(cmd);
+            if (rc.exit_code != 0)
+            {
+                return {Strings::concat(std::move(rc.output), "\n\nFailed to get version of ", exe_path, "\n"),
+                        expected_right_tag};
+            }
+
+            /* Sample output:
+jf version 2.16.4
+                */
+
+            const auto idx = rc.output.find("jf version");
+            Checks::check_exit(
+                VCPKG_LINE_INFO, idx != std::string::npos, "Unexpected format of jf version string: %s", rc.output);
+            return {rc.output.substr(idx), expected_left_tag};
+        }
+    };
+
     struct IfwInstallerBaseProvider : ToolProvider
     {
         virtual StringLiteral tool_data_name() const override { return "installerbase"; }
@@ -848,6 +875,14 @@ coscli version v0.11.0-beta
                         return {"cos", "0"};
                     }
                     return get_path(paths, CosCliProvider());
+                }
+                if (tool == Tools::JFROGCLI)
+                {
+                    if (get_environment_variable("VCPKG_FORCE_SYSTEM_BINARIES").has_value())
+                    {
+                        return {"jf", "0"};
+                    }
+                    return get_path(paths, JFrogCliProvider());
                 }
                 if (tool == Tools::TAR)
                 {

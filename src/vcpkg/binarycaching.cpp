@@ -1327,6 +1327,60 @@ namespace
             return false;
         }
     };
+
+    struct JFrogBinaryProvider : ObjectStorageProvider
+    {
+        JFrogBinaryProvider(const VcpkgPaths& paths,
+                          std::vector<std::string>&& read_prefixes,
+                          std::vector<std::string>&& write_prefixes)
+            : ObjectStorageProvider(paths, std::move(read_prefixes), std::move(write_prefixes))
+        {
+        }
+
+        StringLiteral vendor() const override { return "JFROG"; }
+
+        Command command() const { return Command{paths.get_tool_exe(Tools::JFROGCLI)}; }
+
+        bool stat(StringView url) const override
+        {
+            auto cmd = command().string_arg("rt").string_arg("s").string_arg(url);
+            return cmd_execute(cmd) == 0;
+        }
+
+        bool upload_file(StringView object, const Path& archive) const override
+        {
+            auto cmd = command().string_arg("rt").string_arg("u").string_arg(archive).string_arg(object);
+            const auto out = cmd_execute_and_capture_output(cmd);
+            if (out.exit_code == 0)
+            {
+                return true;
+            }
+
+            msg::println(Color::warning,
+                         msgObjectStorageToolFailed,
+                         msg::exit_code = out.exit_code,
+                         msg::tool_name = Tools::JFROGCLI);
+            msg::write_unlocalized_text_to_stdout(Color::warning, out.output);
+            return false;
+        }
+
+        bool download_file(StringView object, const Path& archive) const override
+        {
+            auto cmd = command().string_arg("rt").string_arg("dl").string_arg(object).string_arg(archive);
+            const auto out = cmd_execute_and_capture_output(cmd);
+            if (out.exit_code == 0)
+            {
+                return true;
+            }
+
+            msg::println(Color::warning,
+                         msgObjectStorageToolFailed,
+                         msg::exit_code = out.exit_code,
+                         msg::tool_name = Tools::JFROGCLI);
+            msg::write_unlocalized_text_to_stdout(Color::warning, out.output);
+            return false;
+        }
+    };
 }
 
 namespace vcpkg
@@ -1585,6 +1639,8 @@ namespace vcpkg
         aws_no_sign_request = false;
         cos_read_prefixes.clear();
         cos_write_prefixes.clear();
+        jfrog_read_prefixes.clear();
+        jfrog_write_prefixes.clear();
         sources_to_read.clear();
         sources_to_write.clear();
         configs_to_read.clear();
@@ -1956,6 +2012,30 @@ namespace
 
                 handle_readwrite(state->cos_read_prefixes, state->cos_write_prefixes, std::move(p), segments, 2);
             }
+            else if (segments[0].second == "x-jfrog")
+            {
+                // Scheme: x-jfrog,<prefix>[,<readwrite>]
+                if (segments.size() < 2)
+                {
+                    return add_error(msg::format(msgInvalidArgumentRequiresPrefix, msg::binary_source = "jfrog"),
+                                     segments[0].first);
+                }
+
+                if (segments.size() > 3)
+                {
+                    return add_error(
+                        msg::format(msgInvalidArgumentRequiresOneOrTwoArguments, msg::binary_source = "jfrog"),
+                        segments[3].first);
+                }
+
+                auto p = segments[1].second;
+                if (p.back() != '/')
+                {
+                    p.push_back('/');
+                }
+
+                handle_readwrite(state->jfrog_read_prefixes, state->jfrog_write_prefixes, std::move(p), segments, 2);
+            }
             else
             {
                 return add_error(msg::format(msgUnknownBinaryProviderType), segments[0].first);
@@ -2232,6 +2312,12 @@ ExpectedS<std::vector<std::unique_ptr<IBinaryProvider>>> vcpkg::create_binary_pr
             paths, std::move(s.cos_read_prefixes), std::move(s.cos_write_prefixes)));
     }
 
+    if (!s.jfrog_read_prefixes.empty() || !s.jfrog_write_prefixes.empty())
+    {
+        providers.push_back(std::make_unique<JFrogBinaryProvider>(
+            paths, std::move(s.jfrog_read_prefixes), std::move(s.jfrog_write_prefixes)));
+    }
+
     if (!s.archives_to_read.empty() || !s.archives_to_write.empty() || !s.azblob_templates_to_put.empty())
     {
         providers.push_back(std::make_unique<ArchivesBinaryProvider>(paths,
@@ -2481,6 +2567,9 @@ void vcpkg::help_topic_binary_caching(const VcpkgPaths&)
                "**Experimental: will change or be removed without warning** Adds an COS source. "
                "Uses the cos CLI for uploads and downloads. Prefix should include cos:// scheme and be suffixed "
                "with a `/`.");
+    tbl.format("x-jfrog,<prefix>[,<rw>]",
+               "**Experimental: will change or be removed without warning** Adds an JFrog Artifactory source. "
+               "Uses the JFrog CLI for uploads and downloads. Prefix should be suffixed with a `/`.");
     tbl.format("interactive", "Enables interactive credential management for some source types");
     tbl.blank();
     tbl.text("The `<rw>` optional parameter for certain strings controls whether they will be consulted for "
